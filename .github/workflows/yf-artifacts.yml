@@ -1,0 +1,86 @@
+name: Save 1m FX (USDJPY/EURJPY/EURUSD) to Artifacts (JST 00:00, fetch yesterday)
+
+on:
+  schedule:
+    # JST 00:00 = UTC 15:00
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install yfinance pandas
+
+      - name: Download "yesterday (JST) 00:00-24:00" 1min CSV for 3 tickers
+        run: |
+          python - <<'PY'
+          import time
+          import yfinance as yf
+          import pandas as pd
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from pathlib import Path
+
+          SAVE_DIR = Path("out"); SAVE_DIR.mkdir(exist_ok=True)
+          TICKERS = {
+            "USDJPY=X": "USDJPY",
+            "EURJPY=X": "EURJPY",
+            "EURUSD=X": "EURUSD",
+          }
+          INTERVAL = "1m"
+
+          jst = ZoneInfo("Asia/Tokyo")
+          today_jst = datetime.now(jst).date()
+          yday = today_jst - timedelta(days=1)
+          start_jst = datetime(yday.year, yday.month, yday.day, 0, 0, 0, tzinfo=jst)
+          end_jst   = start_jst + timedelta(days=1)
+          start_utc = start_jst.astimezone(timezone.utc)
+          end_utc   = end_jst.astimezone(timezone.utc)
+
+          for yf_sym, short in TICKERS.items():
+              print(f"[Info] Fetch {yf_sym} {INTERVAL} from {start_jst} JST to {end_jst} JST")
+              for attempt in range(3):
+                  try:
+                      df = yf.download(
+                          yf_sym,
+                          interval=INTERVAL,
+                          start=start_utc,
+                          end=end_utc,
+                          auto_adjust=True,
+                          progress=False,
+                      )
+                      if df.empty:
+                          raise RuntimeError("No data downloaded")
+                      try:
+                          df.index = df.index.tz_convert("Asia/Tokyo")
+                      except Exception:
+                          df.index = df.index.tz_localize("UTC").tz_convert("Asia/Tokyo")
+                      df.index = df.index.floor("min")
+                      df = df[(df.index >= start_jst) & (df.index < end_jst)]
+                      if df.empty:
+                          raise RuntimeError("Filtered empty after JST window")
+                      out = SAVE_DIR / f"yf_{short}_1m_{yday.strftime('%Y%m%d')}.csv"
+                      df.to_csv(out, encoding="utf-8-sig")
+                      print(f"[Done] {yf_sym}: {len(df)} rows -> {out}")
+                      break
+                  except Exception as e:
+                      print(f"[Warn] {yf_sym} attempt {attempt+1}/3 failed: {e}")
+                      time.sleep(3)
+              else:
+                  m = SAVE_DIR / f"FAILED_{short}_{yday.strftime('%Y%m%d')}.txt"
+                  m.write_text("download failed")
+                  print(f"[Error] Gave up {yf_sym}, wrote {m}")
+          PY
+
+      - name: Upload artifact (all CSVs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: yf_1m_3pairs
+          path: out/*
+          retention-days: 30
