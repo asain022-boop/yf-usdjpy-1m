@@ -1,0 +1,52 @@
+name: Save 1m USDJPY (daily JST 02:30)
+
+on:
+  schedule:
+    # JST 02:30 = UTC 17:30
+    - cron: "30 17 * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install yfinance pandas
+      - name: Download 1m (1d) and save as CSV (JST date)
+        run: |
+          python - <<'PY'
+          import yfinance as yf
+          import pandas as pd
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from pathlib import Path
+
+          SAVE_DIR = Path("data"); SAVE_DIR.mkdir(parents=True, exist_ok=True)
+          TICKER, INTERVAL, PERIOD = "USDJPY=X", "1m", "1d"
+          print(f"[Info] Downloading {TICKER} {INTERVAL=} {PERIOD=}")
+          df = yf.download(TICKER, interval=INTERVAL, period=PERIOD, auto_adjust=True, progress=False)
+          if df.empty:
+            raise SystemExit("[Error] No data downloaded.")
+          try:
+            df.index = df.index.tz_convert("Asia/Tokyo")
+          except Exception:
+            df.index = df.index.tz_localize("UTC").tz_convert("Asia/Tokyo")
+          df.index = df.index.floor("min")
+          jst_today = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d")
+          out_csv = SAVE_DIR / f"yf_usdjpy_1m_{jst_today}.csv"
+          df.to_csv(out_csv, encoding="utf-8-sig")
+          print(f"[Done] Saved {len(df)} rows -> {out_csv}")
+          PY
+      - name: Commit & Push
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git add data/*.csv
+          git commit -m "daily JST 02:30 data" || echo "nothing to commit"
+          git push
