@@ -1,0 +1,51 @@
+name: Save 1m USDJPY to Artifacts (JST 02:30)
+
+on:
+  schedule:
+    # JST 02:30 は UTC 17:30
+    - cron: "30 17 * * *"
+  workflow_dispatch:  # 手動実行ボタン
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install yfinance pandas
+
+      - name: Download CSV
+        run: |
+          python - <<'PY'
+          import yfinance as yf
+          import pandas as pd
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from pathlib import Path
+
+          SAVE_DIR = Path("out"); SAVE_DIR.mkdir(exist_ok=True)
+          TICKER, INTERVAL, PERIOD = "USDJPY=X", "1m", "1d"  # ← 毎日1日分
+          df = yf.download(TICKER, interval=INTERVAL, period=PERIOD, auto_adjust=True, progress=False)
+          if df.empty:
+            raise SystemExit("No data downloaded")
+          try:
+            df.index = df.index.tz_convert("Asia/Tokyo")
+          except Exception:
+            df.index = df.index.tz_localize("UTC").tz_convert("Asia/Tokyo")
+          df.index = df.index.floor("min")
+
+          jst_today = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d")
+          out = SAVE_DIR / f"yf_usdjpy_1m_{jst_today}.csv"
+          df.to_csv(out, encoding="utf-8-sig")
+          print("Saved:", out)
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yf_usdjpy_1m   # アーティファクト名（固定）
+          path: out/*.csv
+          retention-days: 30   # 保持日数はお好みで（最大90目安）
