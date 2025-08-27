@@ -1,10 +1,10 @@
-name: Save 1m USDJPY to Artifacts (JST 02:30)
+name: Save 1m USDJPY to Artifacts (JST 00:00, fetch yesterday)
 
 on:
   schedule:
-    # JST 02:30 は UTC 17:30
-    - cron: "30 17 * * *"
-  workflow_dispatch:  # 手動実行ボタン
+    # JST 00:00 = UTC 15:00
+    - cron: "0 15 * * *"
+  workflow_dispatch:
 
 jobs:
   run:
@@ -17,35 +17,58 @@ jobs:
       - name: Install deps
         run: pip install yfinance pandas
 
-      - name: Download CSV
+      - name: Download "yesterday (JST) 00:00-24:00" 1min CSV
         run: |
           python - <<'PY'
           import yfinance as yf
           import pandas as pd
-          from datetime import datetime
+          from datetime import datetime, timedelta, timezone
           from zoneinfo import ZoneInfo
           from pathlib import Path
 
           SAVE_DIR = Path("out"); SAVE_DIR.mkdir(exist_ok=True)
-          TICKER, INTERVAL, PERIOD = "USDJPY=X", "1m", "1d"  # ← 毎日1日分
-          df = yf.download(TICKER, interval=INTERVAL, period=PERIOD, auto_adjust=True, progress=False)
+          TICKER, INTERVAL = "USDJPY=X", "1m"
+
+          jst = ZoneInfo("Asia/Tokyo")
+          today_jst = datetime.now(jst).date()
+          yday = today_jst - timedelta(days=1)
+
+          # JSTの昨日の0:00〜本日0:00（endは排他的）をUTCへ変換
+          start_jst = datetime(yday.year, yday.month, yday.day, 0, 0, 0, tzinfo=jst)
+          end_jst   = start_jst + timedelta(days=1)
+          start_utc = start_jst.astimezone(timezone.utc)
+          end_utc   = end_jst.astimezone(timezone.utc)
+
+          print(f"[Info] Fetch {TICKER} {INTERVAL} from {start_jst} JST to {end_jst} JST")
+          df = yf.download(
+              TICKER,
+              interval=INTERVAL,
+              start=start_utc,
+              end=end_utc,
+              auto_adjust=True,
+              progress=False,
+          )
           if df.empty:
-            raise SystemExit("No data downloaded")
+              raise SystemExit("No data downloaded")
+
+          # タイムゾーン整形（JST）& 分に丸める
           try:
-            df.index = df.index.tz_convert("Asia/Tokyo")
+              df.index = df.index.tz_convert("Asia/Tokyo")
           except Exception:
-            df.index = df.index.tz_localize("UTC").tz_convert("Asia/Tokyo")
+              df.index = df.index.tz_localize("UTC").tz_convert("Asia/Tokyo")
           df.index = df.index.floor("min")
 
-          jst_today = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d")
-          out = SAVE_DIR / f"yf_usdjpy_1m_{jst_today}.csv"
+          # 念のため、JSTの範囲にフィルタ（余分が来た場合）
+          df = df[(df.index >= start_jst) & (df.index < end_jst)]
+
+          out = SAVE_DIR / f"yf_usdjpy_1m_{yday.strftime('%Y%m%d')}.csv"
           df.to_csv(out, encoding="utf-8-sig")
-          print("Saved:", out)
+          print(f"[Done] Saved {len(df)} rows -> {out}")
           PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: yf_usdjpy_1m   # アーティファクト名（固定）
+          name: yf_usdjpy_1m
           path: out/*.csv
-          retention-days: 30   # 保持日数はお好みで（最大90目安）
+          retention-days: 30
